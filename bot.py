@@ -25,14 +25,21 @@ from dotenv import load_dotenv
 
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
+
 def _keep_alive():
-port = int(os.environ.get("PORT", "10000"))
-class H(BaseHTTPRequestHandler):
-def do_GET(self):
-self.send_response(200); self.end_headers(); self.wfile.write(b"OK")
-def log_message(self, *a): pass
-threading.Thread(target=HTTPServer(("0.0.0.0", port), H).serve_forever, daemon=True).start()
+    port = int(os.environ.get("PORT", "10000"))
+    class H(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"OK")
+        def log_message(self, *a):
+            pass
+    server = HTTPServer(("0.0.0.0", port), H)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
 _keep_alive()
+
 
 # --------------------------------------------------------------------------
 # Config
