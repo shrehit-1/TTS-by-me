@@ -2,8 +2,10 @@
 
 This is the single file to edit when you want to add a default word.
 
-  * WORD_MAP: Roman word -> Devanagari meaning, e.g. "kr": "कर".
-    This is what the bot says. Add ONE line here per new word.
+  * WORD_MAP: Roman word -> what the bot says, e.g. "kr": "कर".
+    Add ONE line here per new word. Accent rule: if the meaning is
+    written in Devanagari, the bot says it in a Hindi accent; if it is
+    written in English letters, the bot says it in an English accent.
   * HINDI_ROMAN_WORDS: every WORD_MAP word is automatically counted as
     Hindi for language detection (built from WORD_MAP below), plus a few
     extra words that only help detection and have no fixed meaning

@@ -31,7 +31,7 @@ from dotenv import load_dotenv
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from roman_hindi import WORD_MAP, to_devanagari  # accent fix: Roman Hindi -> Devanagari
+from roman_hindi import WORD_MAP, segment_text, to_devanagari  # accent fix: Roman Hindi -> Devanagari
 
 def _keep_alive():
     port = int(os.environ.get("PORT", "10000"))
@@ -739,7 +739,7 @@ async def tts_worker(guild_id: int):
     print(f"[worker] started for guild {guild_id}")
     try:
         while True:
-            text, lang = await state.queue.get()
+            segments, lang = await state.queue.get()
             state.busy = True
             gen = state.generation
             try:
@@ -747,27 +747,32 @@ async def tts_worker(guild_id: int):
                 vc = guild.voice_client if guild else None
                 if vc is None or not vc.is_connected():
                     continue
-                voice = VOICES[state.style][lang]
-                print(f"[tts] ({lang}/{voice}) {text!r}")
-                if not await synthesize(text, voice):
-                    print("[tts] synthesis failed, skipping message")
-                    continue
-                if gen != state.generation:
-                    continue
-                if state.skip_pending:
-                    state.skip_pending = False
-                    continue
-                await wait_for_dave(vc, state)
-                if gen != state.generation or not vc.is_connected():
-                    continue
-                async with state.play_lock:
-                    make_opus, make_pcm = file_sources(str(LAST_TTS))
-                    ok = await play_with_fallback(vc, make_opus, make_pcm)
-                    if ok:
-                        state.last_spoke = time.time()
-                        state.last_real_spoke = time.time()
-                    if not ok:
-                        print("[audio] Could not play this message.")
+                # One message can mix accents: each segment is synthesized
+                # and played with its own voice, in order.
+                for seg_text, seg_lang in segments:
+                    if gen != state.generation:
+                        break
+                    if state.skip_pending:
+                        state.skip_pending = False
+                        break
+                    voice = VOICES[state.style][seg_lang]
+                    print(f"[tts] ({seg_lang}/{voice}) {seg_text!r}")
+                    if not await synthesize(seg_text, voice):
+                        print("[tts] synthesis failed, skipping segment")
+                        continue
+                    if gen != state.generation:
+                        break
+                    await wait_for_dave(vc, state)
+                    if gen != state.generation or not vc.is_connected():
+                        break
+                    async with state.play_lock:
+                        make_opus, make_pcm = file_sources(str(LAST_TTS))
+                        ok = await play_with_fallback(vc, make_opus, make_pcm)
+                        if ok:
+                            state.last_spoke = time.time()
+                            state.last_real_spoke = time.time()
+                        if not ok:
+                            print("[audio] Could not play this segment.")
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -905,18 +910,13 @@ def check_can_speak(guild, member):
     return get_state(guild.id), vc, None
 
 
-def speak_text(text: str, lang: str) -> str:
-    """Accent fix: Roman Hindi ko Devanagari me badlo, taaki Hindi voice sahi bole.
-
-    Sirf tab jab lang hindi ho aur text me Devanagari pehle se na ho.
-    English messages ko kabhi convert nahi karta.
-    """
-    if lang == "hi" and not DEVANAGARI_RE.search(text):
-        return to_devanagari(text)
-    return text
-
-
 def build_item(raw: str, state: GuildState):
+    """Returns (segments, lang). segments is a list of (text, lang) pieces:
+    Hindi pieces are spoken in the Hindi voice, English pieces in the
+    English voice — so a dictionary word whose meaning is written in
+    English letters is spoken in an English accent, and one written in
+    Devanagari in a Hindi accent. Single entry point — /say, !say and VC
+    chat all go through build_item -> enqueue_text, so this covers all."""
     prefix_lang, body = split_lang_prefix(raw)
     text = clean_text(body)
     if not text or not re.search(r"\w", text):
@@ -929,10 +929,11 @@ def build_item(raw: str, state: GuildState):
         lang = "en"
     else:
         lang = detect_language(text)
-        # Accent fix: single entry point — /say, !say and VC chat all go
-        # through build_item -> enqueue_text, so converting here covers all.
-        text = speak_text(text, lang)
-    return text, lang
+    if lang == "hi":
+        segments = segment_text(text)
+    else:
+        segments = [(text, "en")]
+    return segments, lang
 
 
 def enqueue_text(state: GuildState, raw: str) -> str:

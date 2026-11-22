@@ -25,6 +25,8 @@ are never touched.
 
 import re
 
+DEVANAGARI_RE = re.compile(r"[\u0900-\u097F]")
+
 # ---------------------------------------------------------------------------
 # 1. Dictionary: hand-checked spellings for the most common words.
 #    (Covers the bot's ROMAN_HINDI_WORDS list plus other frequent words.)
@@ -161,6 +163,40 @@ def _transliterate_word(word: str) -> str:
 
 
 _WORD_RE = re.compile(r"[A-Za-z]+")
+
+
+def segment_text(text: str) -> list:
+    """Split a Hindi-detected message into (text, lang) segments.
+
+    A dictionary word whose meaning is written in English letters stays
+    English ("en") — the bot speaks it in an English accent. Everything
+    else becomes Devanagari ("hi") and is spoken in a Hindi accent.
+    Spaces and punctuation ride along with the segment before them.
+    """
+    segments: list = []
+
+    def push(chunk: str, lang: str) -> None:
+        if not chunk:
+            return
+        if segments and segments[-1][1] == lang:
+            segments[-1] = (segments[-1][0] + chunk, lang)
+        else:
+            segments.append((chunk, lang))
+
+    for m in re.finditer(r"[A-Za-z]+|[^A-Za-z]+", text):
+        tok = m.group(0)
+        if re.fullmatch(r"[A-Za-z]+", tok):
+            word = tok.lower()
+            if word in WORD_MAP:
+                val = WORD_MAP[word]
+                # Devanagari meaning -> Hindi accent; Latin meaning -> English accent.
+                lang = "hi" if DEVANAGARI_RE.search(val) else "en"
+                push(val, lang)
+            else:
+                push(_transliterate_word(word), "hi")
+        else:
+            push(tok, segments[-1][1] if segments else "hi")
+    return segments
 
 
 def to_devanagari(text: str) -> str:
