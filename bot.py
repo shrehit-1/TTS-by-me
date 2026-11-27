@@ -665,6 +665,26 @@ async def reconnect_voice(guild, state) -> bool:
         state.reconnecting = False
 
 
+# v5: reconnect only when speech is actually needed after idle.
+# The 5-min timer reconnect is gone (v4 — it made the rejoin sound), but
+# silent packets alone do NOT keep the media path alive, so a message
+# after minutes of silence would play into a dead connection. Fix: before
+# playing, if nothing real was spoken for 2 min, do ONE fresh reconnect.
+# No sound while idle — the reconnect happens only when someone speaks.
+RECONNECT_ON_DEMAND_IDLE_SECONDS = 120.0
+
+
+async def maybe_reconnect_if_idle(guild, state) -> None:
+    idle_for = time.time() - (state.last_real_spoke or state.last_spoke or time.time())
+    if idle_for < RECONNECT_ON_DEMAND_IDLE_SECONDS:
+        return
+    print(f"[keepalive] idle {idle_for:.0f}s, reconnecting before play")
+    async with state.play_lock:
+        if await reconnect_voice(guild, state):
+            state.last_real_spoke = time.time()
+            state.last_spoke = time.time()
+
+
 async def voice_keepalive_loop(guild_id: int):
     """While in VC, send 1s silence every 20s so the media path survives idle."""
     state = get_state(guild_id)
@@ -751,12 +771,26 @@ async def tts_worker(guild_id: int):
                 if state.skip_pending:
                     state.skip_pending = False
                     continue
+                # v5: fresh connection if the media path went stale in idle.
+                await maybe_reconnect_if_idle(guild, state)
+                vc = guild.voice_client
+                if vc is None or not vc.is_connected():
+                    continue
                 await wait_for_dave(vc, state)
                 if gen != state.generation or not vc.is_connected():
                     continue
                 async with state.play_lock:
                     make_opus, make_pcm = file_sources(str(LAST_TTS))
                     ok = await play_with_fallback(vc, make_opus, make_pcm)
+                    if not ok:
+                        # Play failed into a stale path: one reconnect + retry.
+                        print("[audio] play failed, reconnecting and retrying once")
+                        if await reconnect_voice(guild, state):
+                            vc = guild.voice_client
+                            if vc is not None and vc.is_connected():
+                                await wait_for_dave(vc, state)
+                                make_opus, make_pcm = file_sources(str(LAST_TTS))
+                                ok = await play_with_fallback(vc, make_opus, make_pcm)
                     if ok:
                         state.last_spoke = time.time()
                         state.last_real_spoke = time.time()
@@ -941,6 +975,10 @@ def enqueue_text(state: GuildState, raw: str) -> str:
 
 
 async def run_tone(guild, state, vc) -> bool:
+    await maybe_reconnect_if_idle(guild, state)
+    vc = guild.voice_client
+    if vc is None or not vc.is_connected():
+        return False
     await wait_for_dave(vc, state)
     async with state.play_lock:
         make_opus, make_pcm = tone_sources()
